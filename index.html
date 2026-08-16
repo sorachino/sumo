@@ -17,7 +17,7 @@
     --blue:#2C4A6E;
     --gold:#C79A3C;
   }
-  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none;}
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent; -webkit-user-select:none; -moz-user-select:none; user-select:none; -webkit-touch-callout:none;}
   html,body{height:100%;margin:0;overscroll-behavior:none;}
   body{
     font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
@@ -254,7 +254,7 @@
     </div>
     <canvas id="ring" width="420" height="420"></canvas>
     <div class="statusLine" id="statusLine">はっけよい、のこった!</div>
-    <div class="hint" style="max-width:340px; line-height:1.4; font-size:.72rem;">相手方向=押し/突っ張り・逆=引き落とし・横=はたき込み/上手投げ・相手の押し直後0.45秒以内に前で離すとカウンター</div>
+    <div class="hint" style="max-width:340px; line-height:1.4; font-size:.72rem;">相手方向=押し/突っ張り・逆=引き落とし・横=はたき込み/上手投げ・相手の押し直後0.45秒以内に前で離すと回避</div>
     <div class="controls">
       <div class="stickZone" id="stickZone"><div class="stickKnob" id="stickKnob"></div></div>
       <div class="pushWrap">
@@ -414,12 +414,10 @@
       playDrum(t, 0.5, 62);
       playDrum(t + 0.09, 0.4, 50);
       crowdSwell(0.85);
-    } else if (type === 'counter_hit'){
-      playDrum(t, 0.55, 130);
-      playDrum(t + 0.06, 0.5, 60);
-      playDrum(t + 0.16, 0.35, 45);
-      crowdSwell(1);
-    } else if (type === 'counter_miss'){
+    } else if (type === 'dodge_hit'){
+      playDrum(t, 0.3, 160);
+      crowdSwell(0.6);
+    } else if (type === 'dodge_miss'){
       crowdSwell(0.2);
     } else if (type === 'hiki_miss' || type === 'hataki_miss' || type === 'nage_miss'){
       crowdSwell(0.12);
@@ -616,8 +614,8 @@
     const diffLabel = {easy:'弱い', normal:'普通', hard:'強い'}[cpuDifficulty] || '普通';
     opponentName = 'CPU(' + diffLabel + ')';
     localState = {
-      p1:{x:-70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0},
-      p2:{x:70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0},
+      p1:{x:-70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0,lastJabAt:0},
+      p2:{x:70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0,lastJabAt:0},
       status:'playing',
       winner:null,
       lastEvent:null,
@@ -672,8 +670,8 @@
 
   async function createMatchState(id){
     localState = {
-      p1:{x:-70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0},
-      p2:{x:70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0},
+      p1:{x:-70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0,lastJabAt:0},
+      p2:{x:70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0,lastJabAt:0},
       status:'playing',
       winner:null,
       lastEvent:null,
@@ -811,35 +809,40 @@
     function push(target, vx, vy){ target.vx += vx; target.vy += vy; }
 
     if (sector === 'front'){
-      const COUNTER_WINDOW = 450;
-      const COUNTER_LATE = 750;
+      const DODGE_WINDOW = 450;
+      const DODGE_LATE = 750;
       const sinceOppFront = now - (opp.lastFrontReleaseAt || -999999);
-      if (sinceOppFront < COUNTER_WINDOW){
-        // カウンター成功: 相手の勢いを打ち消して逆に強く弾き返す
+      if (sinceOppFront < DODGE_WINDOW){
+        // 回避成功: 横にかわして相手の突進を無効化する(自分から攻撃はしない)
         opp.lastFrontReleaseAt = 0;
-        opp.vx *= -0.3; opp.vy *= -0.3;
-        push(opp, -fwd.x*maxForce*1.5*effPower, -fwd.y*maxForce*1.5*effPower);
-        opp.staggeredUntil = now + 700;
-        setEvent(who, 'counter_hit');
-      } else if (sinceOppFront < COUNTER_LATE){
-        // タイミングが遅れてカウンター失敗
+        opp.vx *= 0.12; opp.vy *= 0.12;
+        const side = sideVectors(fwd).left;
+        push(me, side.x*maxForce*0.3*effPower, side.y*maxForce*0.3*effPower);
+        opp.staggeredUntil = now + 300;
+        setEvent(who, 'dodge_hit');
+      } else if (sinceOppFront < DODGE_LATE){
+        // タイミングが遅れて回避失敗
         opp.lastFrontReleaseAt = 0;
         me.staggeredUntil = now + 350;
-        setEvent(who, 'counter_miss');
+        setEvent(who, 'dodge_miss');
       } else if (power < 0.35){
-        push(me, fwd.x*maxForce*0.55*effPower, fwd.y*maxForce*0.55*effPower);
-        if (dist < MIN_DIST*1.3) opp.staggeredUntil = now + 150;
+        const jabCooldown = 260;
+        const sinceLastJab = now - (me.lastJabAt || -999999);
+        const spamPenalty = sinceLastJab < jabCooldown ? 0.45 : 1;
+        push(me, fwd.x*maxForce*0.4*effPower*spamPenalty, fwd.y*maxForce*0.4*effPower*spamPenalty);
+        if (dist < MIN_DIST*1.3 && spamPenalty === 1) opp.staggeredUntil = now + 150;
         setEvent(who, 'jab');
         me.lastFrontReleaseAt = now;
+        me.lastJabAt = now;
       } else {
-        push(me, fwd.x*maxForce*effPower, fwd.y*maxForce*effPower);
+        push(me, fwd.x*maxForce*1.2*effPower, fwd.y*maxForce*1.2*effPower);
         setEvent(who, 'push');
         me.lastFrontReleaseAt = now;
       }
     } else if (sector === 'back'){
       const adjacent = dist < MIN_DIST*1.9;
       if (adjacent){
-        push(opp, -fwd.x*maxForce*1.5*effPower, -fwd.y*maxForce*1.5*effPower);
+        push(opp, -fwd.x*maxForce*1.8*effPower, -fwd.y*maxForce*1.8*effPower);
         opp.staggeredUntil = now + 700;
         push(me, -fwd.x*maxForce*0.35*effPower, -fwd.y*maxForce*0.35*effPower);
         setEvent(who, 'hiki_hit');
@@ -851,7 +854,7 @@
       const oppApproach = -(opp.vx*fwd.x + opp.vy*fwd.y);
       if (oppApproach > 3){
         const dir = sideVectors(fwd).left;
-        push(opp, dir.x*maxForce*1.1*effPower, dir.y*maxForce*1.1*effPower);
+        push(opp, dir.x*maxForce*1.4*effPower, dir.y*maxForce*1.4*effPower);
         opp.vx *= 0.2; opp.vy *= 0.2;
         opp.staggeredUntil = now + 600;
         setEvent(who, 'hataki_hit');
@@ -867,7 +870,7 @@
         let dir = {x:opp.x, y:opp.y};
         const dlen = Math.hypot(dir.x, dir.y);
         dir = dlen < 5 ? fwd : {x:dir.x/dlen, y:dir.y/dlen};
-        push(opp, dir.x*maxForce*1.3*effPower, dir.y*maxForce*1.3*effPower);
+        push(opp, dir.x*maxForce*1.6*effPower, dir.y*maxForce*1.6*effPower);
         opp.staggeredUntil = now + 400;
         me.staggeredUntil = now + 250;
         push(me, -dir.x*maxForce*0.2*effPower, -dir.y*maxForce*0.2*effPower);
@@ -1062,8 +1065,8 @@
     hataki_miss:['はたき込みが空振り、体勢を崩した…', '相手のはたき込みが空振りした'],
     nage_hit:   ['上手投げが決まった!', '上手投げで投げられた!'],
     nage_miss:  ['投げが不発、体勢を崩した…', '相手の投げが不発だった'],
-    counter_hit:  ['カウンター成功!弾き返した!', 'カウンターを決められた!'],
-    counter_miss: ['カウンターのタイミングを外してよろけた…', '相手がカウンターに失敗してよろけた']
+    dodge_hit:  ['見事にかわした!', '突進をかわされた!'],
+    dodge_miss: ['回避のタイミングを外してよろけた…', '相手が回避に失敗してよろけた']
   };
 
   function statusText(state){
