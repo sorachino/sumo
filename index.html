@@ -215,6 +215,47 @@
 </style>
 </head>
 <body>
+<script type="module">
+  // Firebase Realtime Databaseをwindow.storage互換のAPIとして使えるようにする
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
+  import { getDatabase, ref, get as dbGet, set as dbSet, remove as dbRemove } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-database.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyALoOnaEnCrChJ1-vXem9CyCedY14e3fA0",
+    authDomain: "sumo-6aca6.firebaseapp.com",
+    databaseURL: "https://sumo-6aca6-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "sumo-6aca6",
+    storageBucket: "sumo-6aca6.firebasestorage.app",
+    messagingSenderId: "26117672618",
+    appId: "1:26117672618:web:64aecb1267d4b588a1cad3"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+
+  function pathFor(key){
+    return 'sumo/' + String(key).replace(/[.#$\[\]/]/g, '_');
+  }
+
+  window.storage = {
+    async get(key, shared){
+      const snap = await dbGet(ref(db, pathFor(key)));
+      if (!snap.exists()) return null;
+      return { key, value: snap.val(), shared: !!shared };
+    },
+    async set(key, value, shared){
+      await dbSet(ref(db, pathFor(key)), value);
+      return { key, value, shared: !!shared };
+    },
+    async delete(key, shared){
+      await dbRemove(ref(db, pathFor(key)));
+      return { key, deleted: true, shared: !!shared };
+    },
+    async list(prefix, shared){
+      return { keys: [], prefix, shared: !!shared };
+    }
+  };
+</script>
 <div id="app">
   <div class="muteBtn" id="muteBtn">🔊</div>
 
