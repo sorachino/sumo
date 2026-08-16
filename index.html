@@ -588,6 +588,21 @@
         matchId = inv.matchId;
         opponentName = inv.opponentName || '相手';
         startAsAuthority();
+        return;
+      }
+      // 自分の待機情報が相手の書き込みと衝突して上書きされていないか確認。
+      // 上書きされていて、今ロビーに誰か別の人が待っている場合は、こちらから捕まえに行く
+      const lobby = await sget('sumo:lobby');
+      const now = Date.now();
+      if (lobby && lobby.id && lobby.id !== myId && (now - lobby.ts) < 9000){
+        clearInterval(inviteTimer);
+        role = 2;
+        matchId = uid();
+        opponentName = lobby.name || '相手';
+        await sset('sumo:lobby', {id:null, name:null, ts:0});
+        await sset('sumo:invite:' + lobby.id, {matchId, opponentName: myName, ts: Date.now()});
+        await createMatchState(matchId);
+        startAsFollower();
       }
     }, 1000);
   }
