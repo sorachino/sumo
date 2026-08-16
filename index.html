@@ -205,10 +205,18 @@
   #resultScreen .resultWord.lose{color:#5a5148;}
   .row{display:flex; gap:10px; width:100%; max-width:340px;}
   .cpuDiffBtn{flex:1; width:auto; padding:10px 6px; font-size:.85rem;}
+  .muteBtn{
+    position:absolute; top:10px; right:10px; z-index:50;
+    width:38px;height:38px;border-radius:50%;
+    background:#00000012;border:1px solid #00000022;
+    display:flex;align-items:center;justify-content:center;
+    font-size:1.05rem; cursor:pointer;
+  }
 </style>
 </head>
 <body>
 <div id="app">
+  <div class="muteBtn" id="muteBtn">🔊</div>
 
   <div class="screen active" id="nameScreen">
     <h1 class="title"><span class="accent">対戦相撲</span>擬似リアルタイム土俵</h1>
@@ -246,7 +254,7 @@
     </div>
     <canvas id="ring" width="420" height="420"></canvas>
     <div class="statusLine" id="statusLine">はっけよい、のこった!</div>
-    <div class="hint" style="max-width:340px; line-height:1.4; font-size:.72rem;">相手方向=押し/突っ張り・逆=引き落とし・横=はたき込み/上手投げ</div>
+    <div class="hint" style="max-width:340px; line-height:1.4; font-size:.72rem;">相手方向=押し/突っ張り・逆=引き落とし・横=はたき込み/上手投げ・相手の押し直後0.45秒以内に前で離すとカウンター</div>
     <div class="controls">
       <div class="stickZone" id="stickZone"><div class="stickKnob" id="stickKnob"></div></div>
       <div class="pushWrap">
@@ -282,6 +290,228 @@
   async function sset(key, val){
     try{ await window.storage.set(key, JSON.stringify(val), true); }catch(e){}
   }
+
+  // ---------- 音(太鼓BGM + 掛け声) ----------
+  let audioMuted = false;
+  let audioCtx = null, masterGain = null;
+  const muteBtn = document.getElementById('muteBtn');
+
+  function ensureAudio(){
+    if (!audioCtx){
+      try{
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        masterGain = audioCtx.createGain();
+        masterGain.gain.value = audioMuted ? 0 : 1;
+        masterGain.connect(audioCtx.destination);
+        noiseBuffer = createNoiseBuffer();
+      }catch(e){ audioCtx = null; }
+    }
+    if (audioCtx && audioCtx.state === 'suspended'){ audioCtx.resume(); }
+  }
+
+  let noiseBuffer = null;
+  function createNoiseBuffer(){
+    const len = audioCtx.sampleRate * 2;
+    const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    let last = 0;
+    for (let i=0; i<len; i++){
+      const white = Math.random()*2-1;
+      last = (last + 0.02*white) / 1.02;
+      data[i] = last * 3.2;
+    }
+    return buf;
+  }
+
+  // 観客のざわめき(常時ループ)
+  let crowdSource = null, crowdGain = null, crowdFilter = null, crowdLfoTimer = null;
+  function startCrowd(mode){
+    stopCrowd();
+    if (!audioCtx || !noiseBuffer) return;
+    crowdSource = audioCtx.createBufferSource();
+    crowdSource.buffer = noiseBuffer;
+    crowdSource.loop = true;
+    crowdFilter = audioCtx.createBiquadFilter();
+    crowdFilter.type = 'bandpass';
+    crowdFilter.frequency.value = mode === 'match' ? 950 : 700;
+    crowdFilter.Q.value = 0.6;
+    crowdGain = audioCtx.createGain();
+    crowdGain.gain.value = mode === 'match' ? 0.09 : 0.035;
+    crowdSource.connect(crowdFilter);
+    crowdFilter.connect(crowdGain);
+    crowdGain.connect(masterGain);
+    crowdSource.start();
+    const base = mode === 'match' ? 0.09 : 0.035;
+    crowdLfoTimer = setInterval(()=>{
+      if (!crowdGain || !audioCtx) return;
+      const target = base + Math.random()*base*0.9;
+      crowdGain.gain.linearRampToValueAtTime(target, audioCtx.currentTime + 1.3);
+    }, 1500);
+  }
+  function stopCrowd(){
+    if (crowdSource){ try{ crowdSource.stop(); }catch(e){} crowdSource = null; }
+    if (crowdLfoTimer){ clearInterval(crowdLfoTimer); crowdLfoTimer = null; }
+  }
+  function crowdSwell(strength){
+    if (!crowdGain || !audioCtx) return;
+    const now = audioCtx.currentTime;
+    crowdGain.gain.cancelScheduledValues(now);
+    crowdGain.gain.setValueAtTime(crowdGain.gain.value, now);
+    crowdGain.gain.linearRampToValueAtTime(0.08 + 0.35*strength, now + 0.06);
+    crowdGain.gain.linearRampToValueAtTime(0.08, now + 1.6);
+  }
+
+  function playDrum(time, volume, freq){
+    if (!audioCtx || !masterGain) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, time);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(30, freq*0.55), time + 0.18);
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.001, volume), time + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.32);
+    osc.connect(gain); gain.connect(masterGain);
+    osc.start(time); osc.stop(time + 0.35);
+  }
+
+  // 体がぶつかった時の「ドスン」
+  function playImpact(time, strength){
+    if (!audioCtx || !masterGain) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(65, time);
+    osc.frequency.exponentialRampToValueAtTime(34, time + 0.12);
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.exponentialRampToValueAtTime(Math.min(0.6, 0.22 + 0.5*strength), time + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.22);
+    osc.connect(gain); gain.connect(masterGain);
+    osc.start(time); osc.stop(time + 0.25);
+
+    if (noiseBuffer){
+      const src = audioCtx.createBufferSource();
+      src.buffer = noiseBuffer;
+      const ngain = audioCtx.createGain();
+      const nfilter = audioCtx.createBiquadFilter();
+      nfilter.type = 'lowpass'; nfilter.frequency.value = 1100;
+      ngain.gain.setValueAtTime(0.0001, time);
+      ngain.gain.exponentialRampToValueAtTime(Math.min(0.35, 0.12 + 0.3*strength), time + 0.005);
+      ngain.gain.exponentialRampToValueAtTime(0.0001, time + 0.15);
+      src.connect(nfilter); nfilter.connect(ngain); ngain.connect(masterGain);
+      src.start(time); src.stop(time + 0.16);
+    }
+  }
+
+  // 技が決まった/空振りした時の音
+  function playTechniqueSound(type){
+    if (!audioCtx) return;
+    const t = audioCtx.currentTime + 0.01;
+    if (type === 'push' || type === 'jab'){
+      playDrum(t, 0.42, 70);
+      crowdSwell(0.3);
+    } else if (type === 'hiki_hit' || type === 'hataki_hit' || type === 'nage_hit'){
+      playDrum(t, 0.5, 62);
+      playDrum(t + 0.09, 0.4, 50);
+      crowdSwell(0.85);
+    } else if (type === 'counter_hit'){
+      playDrum(t, 0.55, 130);
+      playDrum(t + 0.06, 0.5, 60);
+      playDrum(t + 0.16, 0.35, 45);
+      crowdSwell(1);
+    } else if (type === 'counter_miss'){
+      crowdSwell(0.2);
+    } else if (type === 'hiki_miss' || type === 'hataki_miss' || type === 'nage_miss'){
+      crowdSwell(0.12);
+    }
+  }
+
+  // 決着時のスティンガー
+  function playStinger(win){
+    if (!audioCtx || !masterGain) return;
+    const now = audioCtx.currentTime + 0.05;
+    const freqs = win ? [440, 554, 659, 880] : [392, 330, 262];
+    freqs.forEach((f, i)=>{
+      const t = now + i*0.11;
+      const osc = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.28);
+      osc.connect(g); g.connect(masterGain);
+      osc.start(t); osc.stop(t + 0.3);
+    });
+    crowdSwell(win ? 1 : 0.45);
+  }
+
+  let bgmTimer = null, bgmBeatIdx = 0, bgmMode = null;
+  function startBgm(mode){
+    if (bgmMode === mode && bgmTimer) return;
+    stopBgm();
+    bgmMode = mode;
+    ensureAudio();
+    if (!audioCtx) return;
+    startCrowd(mode);
+    const bpm = mode === 'match' ? 100 : 74;
+    const beatMs = 60000 / bpm;
+    const pattern = mode === 'match' ? [1, 0, 0.7, 0.9] : [1, 0, 0, 0.5];
+    bgmBeatIdx = 0;
+    bgmTimer = setInterval(()=>{
+      const strength = pattern[bgmBeatIdx % pattern.length];
+      if (strength > 0){
+        playDrum(audioCtx.currentTime + 0.02, 0.28*strength, mode === 'match' ? 95 : 80);
+      }
+      bgmBeatIdx++;
+    }, beatMs);
+  }
+  function stopBgm(){
+    if (bgmTimer){ clearInterval(bgmTimer); bgmTimer = null; }
+    stopCrowd();
+    bgmMode = null;
+  }
+
+  function speak(text){
+    if (audioMuted) return;
+    try{
+      if (!window.speechSynthesis) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'ja-JP';
+      u.rate = 0.95;
+      u.pitch = 0.75;
+      speechSynthesis.speak(u);
+    }catch(e){}
+  }
+
+  let chantTimer = null;
+  function startChant(){
+    stopChant();
+    speak('はっけよい、のこった');
+    chantTimer = setInterval(()=>{
+      if (localState && localState.status === 'playing'){
+        speak('のこった、のこった');
+      }
+    }, 9000);
+  }
+  function stopChant(){
+    if (chantTimer){ clearInterval(chantTimer); chantTimer = null; }
+    try{ if (window.speechSynthesis) speechSynthesis.cancel(); }catch(e){}
+  }
+
+  muteBtn.addEventListener('click', ()=>{
+    audioMuted = !audioMuted;
+    muteBtn.textContent = audioMuted ? '🔇' : '🔊';
+    if (masterGain) masterGain.gain.value = audioMuted ? 0 : 1;
+    if (audioMuted){ try{ if (window.speechSynthesis) speechSynthesis.cancel(); }catch(e){} }
+  });
+
+  document.addEventListener('pointerdown', function unlockAudioOnce(){
+    ensureAudio();
+    if (!bgmTimer) startBgm('menu');
+    document.removeEventListener('pointerdown', unlockAudioOnce);
+  }, {once:true});
 
   const myId = uid();
   let myName = '相撲取り';
@@ -386,11 +616,12 @@
     const diffLabel = {easy:'弱い', normal:'普通', hard:'強い'}[cpuDifficulty] || '普通';
     opponentName = 'CPU(' + diffLabel + ')';
     localState = {
-      p1:{x:-70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0},
-      p2:{x:70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0},
+      p1:{x:-70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0},
+      p2:{x:70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0},
       status:'playing',
       winner:null,
       lastEvent:null,
+      lastImpact:null,
       names:{p1:myName, p2:opponentName},
       updatedAt: Date.now()
     };
@@ -441,11 +672,12 @@
 
   async function createMatchState(id){
     localState = {
-      p1:{x:-70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0},
-      p2:{x:70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0},
+      p1:{x:-70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0},
+      p2:{x:70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0},
       status:'playing',
       winner:null,
       lastEvent:null,
+      lastImpact:null,
       names:{p1: role===1?myName:opponentName, p2: role===2?myName:opponentName},
       updatedAt: Date.now()
     };
@@ -459,6 +691,8 @@
     document.getElementById('statusLine').textContent = 'はっけよい、のこった!';
     show('matchScreen');
     resetControlsUI();
+    startBgm('match');
+    startChant();
   }
 
   function startAsAuthority(){
@@ -577,20 +811,37 @@
     function push(target, vx, vy){ target.vx += vx; target.vy += vy; }
 
     if (sector === 'front'){
-      if (power < 0.35){
+      const COUNTER_WINDOW = 450;
+      const COUNTER_LATE = 750;
+      const sinceOppFront = now - (opp.lastFrontReleaseAt || -999999);
+      if (sinceOppFront < COUNTER_WINDOW){
+        // カウンター成功: 相手の勢いを打ち消して逆に強く弾き返す
+        opp.lastFrontReleaseAt = 0;
+        opp.vx *= -0.3; opp.vy *= -0.3;
+        push(opp, -fwd.x*maxForce*1.5*effPower, -fwd.y*maxForce*1.5*effPower);
+        opp.staggeredUntil = now + 700;
+        setEvent(who, 'counter_hit');
+      } else if (sinceOppFront < COUNTER_LATE){
+        // タイミングが遅れてカウンター失敗
+        opp.lastFrontReleaseAt = 0;
+        me.staggeredUntil = now + 350;
+        setEvent(who, 'counter_miss');
+      } else if (power < 0.35){
         push(me, fwd.x*maxForce*0.55*effPower, fwd.y*maxForce*0.55*effPower);
         if (dist < MIN_DIST*1.3) opp.staggeredUntil = now + 150;
         setEvent(who, 'jab');
+        me.lastFrontReleaseAt = now;
       } else {
         push(me, fwd.x*maxForce*effPower, fwd.y*maxForce*effPower);
         setEvent(who, 'push');
+        me.lastFrontReleaseAt = now;
       }
     } else if (sector === 'back'){
-      const adjacent = dist < MIN_DIST*1.6;
+      const adjacent = dist < MIN_DIST*1.9;
       if (adjacent){
-        push(opp, -fwd.x*maxForce*0.9*effPower, -fwd.y*maxForce*0.9*effPower);
-        opp.staggeredUntil = now + 500;
-        push(me, -fwd.x*maxForce*0.3*effPower, -fwd.y*maxForce*0.3*effPower);
+        push(opp, -fwd.x*maxForce*1.5*effPower, -fwd.y*maxForce*1.5*effPower);
+        opp.staggeredUntil = now + 700;
+        push(me, -fwd.x*maxForce*0.35*effPower, -fwd.y*maxForce*0.35*effPower);
         setEvent(who, 'hiki_hit');
       } else {
         push(me, -fwd.x*maxForce*0.2*effPower, -fwd.y*maxForce*0.2*effPower);
@@ -628,6 +879,7 @@
     }
   }
 
+  const STAMINA_REGEN = 0.15; // 1ティック(150ms)あたりの自然回復量
   function stepPhysics(){
     applyWalk('p1', myInput);
     applyWalk('p2', cpuMode ? {dx:0,dy:0} : remoteInput2);
@@ -635,6 +887,7 @@
       const s = localState[k];
       s.vx *= 0.90; s.vy *= 0.90;
       s.x += s.vx; s.y += s.vy;
+      s.hp = Math.min(100, s.hp + STAMINA_REGEN);
     });
     resolveCollision();
     checkOutcome();
@@ -671,6 +924,12 @@
       const dmgToB = Math.max(0, aApproach - IMPACT_THRESHOLD) * 2.4;
       a.hp = Math.max(0, a.hp - dmgToA);
       b.hp = Math.max(0, b.hp - dmgToB);
+      if (dmgToA > 0.15 || dmgToB > 0.15){
+        const nowMs = Date.now();
+        if (!localState.lastImpact || nowMs - localState.lastImpact.ts > 220){
+          localState.lastImpact = { ts: nowMs, strength: Math.min(1, (dmgToA+dmgToB)/9) };
+        }
+      }
 
       const relVx = b.vx - a.vx, relVy = b.vy - a.vy;
       const relSpeed = relVx*nx + relVy*ny;
@@ -802,7 +1061,9 @@
     ,hataki_hit:['はたき込みが決まった!', 'はたき込みで崩された!'],
     hataki_miss:['はたき込みが空振り、体勢を崩した…', '相手のはたき込みが空振りした'],
     nage_hit:   ['上手投げが決まった!', '上手投げで投げられた!'],
-    nage_miss:  ['投げが不発、体勢を崩した…', '相手の投げが不発だった']
+    nage_miss:  ['投げが不発、体勢を崩した…', '相手の投げが不発だった'],
+    counter_hit:  ['カウンター成功!弾き返した!', 'カウンターを決められた!'],
+    counter_miss: ['カウンターのタイミングを外してよろけた…', '相手がカウンターに失敗してよろけた']
   };
 
   function statusText(state){
@@ -814,8 +1075,22 @@
     return isMe ? dict[0] : dict[1];
   }
 
+  let lastPlayedEventTs = 0;
+  let lastPlayedImpactTs = 0;
+
   function render(state){
     if (!state) return;
+
+    if (state.lastEvent && state.lastEvent.ts > lastPlayedEventTs){
+      lastPlayedEventTs = state.lastEvent.ts;
+      playTechniqueSound(state.lastEvent.type);
+    }
+    if (state.lastImpact && state.lastImpact.ts > lastPlayedImpactTs){
+      lastPlayedImpactTs = state.lastImpact.ts;
+      if (audioCtx) playImpact(audioCtx.currentTime + 0.01, state.lastImpact.strength || 0.4);
+      crowdSwell(state.lastImpact.strength || 0.4);
+    }
+
     const w = canvas.width, h = canvas.height;
     const scale = (Math.min(w,h)/2 - 10) / R_RING;
     const cx = w/2, cy = h/2;
@@ -842,9 +1117,11 @@
     ctx.moveTo(cx - 30*scale, cy); ctx.lineTo(cx + 30*scale, cy);
     ctx.stroke();
 
-    // players
-    drawPlayer(state.p1, cx, cy, scale, '#2C4A6E');
-    drawPlayer(state.p2, cx, cy, scale, '#B8402B');
+    // players(相手の方を向かせる)
+    const angleP1 = Math.atan2(state.p2.y-state.p1.y, state.p2.x-state.p1.x);
+    const angleP2 = Math.atan2(state.p1.y-state.p2.y, state.p1.x-state.p2.x);
+    drawPlayer(state.p1, cx, cy, scale, '#2C4A6E', angleP1);
+    drawPlayer(state.p2, cx, cy, scale, '#B8402B', angleP2);
 
     // hp bars
     const p1El = document.getElementById(role===1 ? 'myHpFill' : 'oppHpFill');
@@ -855,23 +1132,80 @@
     document.getElementById('statusLine').textContent = statusText(state);
   }
 
-  function drawPlayer(p, cx, cy, scale, color){
+  function drawPlayer(p, cx, cy, scale, color, facingAngle){
     const x = cx + p.x*scale, y = cy + p.y*scale;
     const staggered = p.staggeredUntil && p.staggeredUntil > Date.now();
-    ctx.beginPath();
-    ctx.arc(x, y, R_PLAYER*scale, 0, Math.PI*2);
-    ctx.fillStyle = color;
+    const R = R_PLAYER*scale;
+
+    ctx.save();
     ctx.globalAlpha = staggered ? 0.55 : 1;
+
+    // 腕(進行方向側に2本、上から見て肩の外に出ている部分)
+    const armSpread = 0.6;
+    [-armSpread, armSpread].forEach(off=>{
+      const ax = x + Math.cos(facingAngle+off)*R*0.92;
+      const ay = y + Math.sin(facingAngle+off)*R*0.92;
+      ctx.beginPath();
+      ctx.arc(ax, ay, R*0.3, 0, Math.PI*2);
+      ctx.fillStyle = '#EEC190';
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#00000022';
+      ctx.stroke();
+    });
+
+    const bodyRot = facingAngle + Math.PI/2;
+
+    // 体(肩幅方向に長い楕円、相手の方向に応じて回転)
+    ctx.beginPath();
+    ctx.ellipse(x, y, R*1.18, R*0.85, bodyRot, 0, Math.PI*2);
+    ctx.fillStyle = '#EEC190';
     ctx.fill();
-    ctx.globalAlpha = 1;
+
+    // まわし(楕円のリング)
+    ctx.lineWidth = R*0.3;
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    ctx.ellipse(x, y, R*0.95, R*0.62, bodyRot, 0, Math.PI*2);
+    ctx.stroke();
+
+    // 丁髷(長方形、後方に伸びる向き)
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(facingAngle);
+    ctx.fillStyle = '#2B2320';
+    ctx.fillRect(-R*0.55, -R*0.09, R*0.42, R*0.18);
+    ctx.restore();
+
+    // 顔(常に相手の方を向く目印)
+    const eyeOffset = R*0.4;
+    const eyeSpread = 0.35;
+    [-eyeSpread, eyeSpread].forEach(off=>{
+      const ex = x + Math.cos(facingAngle+off)*eyeOffset;
+      const ey = y + Math.sin(facingAngle+off)*eyeOffset;
+      ctx.beginPath();
+      ctx.arc(ex, ey, R*0.09, 0, Math.PI*2);
+      ctx.fillStyle = '#2B2320';
+      ctx.fill();
+    });
+
+    // 輪郭
     ctx.lineWidth = staggered ? 4 : 3;
     ctx.strokeStyle = staggered ? '#C79A3C' : '#fffdf8';
+    ctx.beginPath();
+    ctx.ellipse(x, y, R*1.18, R*0.85, bodyRot, 0, Math.PI*2);
     ctx.stroke();
+
+    ctx.globalAlpha = 1;
+    ctx.restore();
   }
 
   // ---------- end / result ----------
   function endMatch(state){
+    stopChant();
     const iWon = (role===1 && state.winner==='p1') || (role===2 && state.winner==='p2');
+    playStinger(iWon);
+    setTimeout(()=>{ startBgm('menu'); }, 1500);
     const word = document.getElementById('resultWord');
     const hint = document.getElementById('resultHint');
     word.textContent = iWon ? '勝ち' : '負け';
