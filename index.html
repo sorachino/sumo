@@ -828,7 +828,16 @@
     startChant();
   }
 
-  function startAsAuthority(){
+  async function startAsAuthority(){
+    // 相手(先に部屋を作った側)が書き込んだ初期状態を読み込む。
+    // これをしないと権威側のlocalStateが空のままシミュレーションが動かない。
+    const s = await sget('sumo:match:' + matchId + ':state');
+    localState = s || {
+      p1:{x:-70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0,lastJabAt:0},
+      p2:{x:70,y:0,vx:0,vy:0,hp:100,staggeredUntil:0,lastFrontReleaseAt:0,lastJabAt:0},
+      status:'playing', winner:null, lastEvent:null, lastImpact:null,
+      names:{p1:myName, p2:opponentName}, updatedAt: Date.now()
+    };
     setupMatchUI();
     lastSeenOppSeq = 0;
     simTimer = setInterval(simTick, 150);
