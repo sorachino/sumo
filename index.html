@@ -622,8 +622,8 @@
       matchId = uid();
       opponentName = lobby.name || '相手';
       await sset('sumo:lobby', {id:null, name:null, ts:0});
-      await sset('sumo:invite:' + lobby.id, {matchId, opponentName: myName, ts: Date.now()});
       await createMatchState(matchId);
+      await sset('sumo:invite:' + lobby.id, {matchId, opponentName: myName, ts: Date.now()});
       startAsFollower();
     } else {
       // 自分が待つ側になる
@@ -669,8 +669,8 @@
       matchId = uid();
       opponentName = entry.name || '相手';
       await sset('sumo:room:' + code, {id:null, name:null, ts:0});
-      await sset('sumo:invite:' + entry.id, {matchId, opponentName: myName, ts: Date.now()});
       await createMatchState(matchId);
+      await sset('sumo:invite:' + entry.id, {matchId, opponentName: myName, ts: Date.now()});
       startAsFollower();
     } else {
       alert('その部屋番号は見つかりませんでした。番号を確認してもう一度お試しください。');
@@ -701,8 +701,8 @@
         matchId = uid();
         opponentName = lobby.name || '相手';
         await sset('sumo:lobby', {id:null, name:null, ts:0});
-        await sset('sumo:invite:' + lobby.id, {matchId, opponentName: myName, ts: Date.now()});
         await createMatchState(matchId);
+        await sset('sumo:invite:' + lobby.id, {matchId, opponentName: myName, ts: Date.now()});
         startAsFollower();
       }
     }, 1000);
@@ -838,6 +838,7 @@
       status:'playing', winner:null, lastEvent:null, lastImpact:null,
       names:{p1:myName, p2:opponentName}, updatedAt: Date.now()
     };
+    remoteInput2 = { dx:0, dy:0 };
     setupMatchUI();
     lastSeenOppSeq = 0;
     simTimer = setInterval(simTick, 150);
