@@ -133,16 +133,20 @@
   .hpFill{height:100%; background:linear-gradient(90deg,var(--vermillion),#d9603f); transition:width .15s ease;}
   .hpFill.blue{background:linear-gradient(90deg,var(--blue),#4a76a8);}
   .hpBlock.right .hpFill{margin-left:auto;}
-  canvas{
+  .canvasWrap{
     width:auto;
     height:min(38vh, 340px);
     max-width:100%;
     aspect-ratio:1/1;
+    flex:0 1 auto;
+    margin:0 auto;
+  }
+  canvas{
+    width:100%;
+    height:100%;
+    display:block;
     touch-action:none;
     border-radius:8px;
-    flex:0 1 auto;
-    display:block;
-    margin:0 auto;
   }
   .controls{
     width:100%;
@@ -264,6 +268,12 @@
     <div class="card">
       <input type="text" id="nameInput" maxlength="10" placeholder="しこ名を入力(10文字まで)">
       <button id="findBtn">対戦相手を探す</button>
+      <div class="hint" style="margin:14px 0 6px;">部屋番号で対戦(確実に狙った相手と対戦したい時)</div>
+      <button id="createRoomBtn" class="secondary">部屋を作る</button>
+      <div class="row" style="max-width:none; margin-top:8px;">
+        <input type="text" id="roomCodeInput" inputmode="numeric" maxlength="4" placeholder="部屋番号(4桁)" style="margin-bottom:0;">
+        <button id="joinRoomBtn" style="width:auto; flex:0 0 100px;">参加</button>
+      </div>
       <div class="hint" style="margin:14px 0 6px;">CPUと対戦(テスト・強さを選択)</div>
       <div class="row" style="max-width:none;">
         <button class="secondary cpuDiffBtn" data-diff="easy">弱い</button>
@@ -276,7 +286,8 @@
 
   <div class="screen" id="searchScreen">
     <div class="spinner"></div>
-    <div>対戦相手を探しています…</div>
+    <div id="searchStatusText">対戦相手を探しています…</div>
+    <div id="roomCodeDisplay" style="display:none; font-size:2rem; font-weight:700; letter-spacing:.1em; color:var(--vermillion);"></div>
     <button class="secondary" id="cancelSearchBtn" style="max-width:200px;">やめる</button>
   </div>
 
@@ -293,7 +304,7 @@
         <div class="hpLabel" style="font-weight:400; opacity:.7;">スタミナ</div>
       </div>
     </div>
-    <canvas id="ring" width="420" height="420"></canvas>
+    <div class="canvasWrap"><canvas id="ring" width="420" height="420"></canvas></div>
     <div class="statusLine" id="statusLine">はっけよい、のこった!</div>
     <div class="hint" style="max-width:340px; line-height:1.4; font-size:.72rem;">相手方向=押し/突っ張り・逆=引き落とし・横=はたき込み/上手投げ・相手の押し直後0.45秒以内に前で離すと回避</div>
     <div class="controls">
@@ -594,10 +605,14 @@
 
   let waitingSince = 0;
   let cancelled = false;
+  let currentRoomCode = null;
 
   async function findMatch(){
     cancelled = false;
     cpuMode = false;
+    currentRoomCode = null;
+    document.getElementById('roomCodeDisplay').style.display = 'none';
+    document.getElementById('searchStatusText').textContent = '対戦相手を探しています…';
     show('searchScreen');
     const lobby = await sget('sumo:lobby');
     const now = Date.now();
@@ -619,6 +634,50 @@
     }
   }
 
+  async function createRoom(){
+    cancelled = false;
+    cpuMode = false;
+    const code = String(Math.floor(1000 + Math.random()*9000));
+    currentRoomCode = code;
+    role = 1;
+    waitingSince = Date.now();
+    document.getElementById('searchStatusText').textContent = 'この番号を相手に伝えてください';
+    const disp = document.getElementById('roomCodeDisplay');
+    disp.textContent = code;
+    disp.style.display = 'block';
+    show('searchScreen');
+    await sset('sumo:room:' + code, {id: myId, name: myName, ts: Date.now()});
+    pollInvite();
+  }
+
+  async function joinRoom(){
+    const code = (document.getElementById('roomCodeInput').value || '').trim();
+    if (!/^\d{4}$/.test(code)){
+      alert('4桁の部屋番号を入力してください');
+      return;
+    }
+    cancelled = false;
+    cpuMode = false;
+    currentRoomCode = null;
+    document.getElementById('roomCodeDisplay').style.display = 'none';
+    document.getElementById('searchStatusText').textContent = '部屋に接続しています…';
+    show('searchScreen');
+    const entry = await sget('sumo:room:' + code);
+    const now = Date.now();
+    if (entry && entry.id && (now - entry.ts) < 300000){
+      role = 2;
+      matchId = uid();
+      opponentName = entry.name || '相手';
+      await sset('sumo:room:' + code, {id:null, name:null, ts:0});
+      await sset('sumo:invite:' + entry.id, {matchId, opponentName: myName, ts: Date.now()});
+      await createMatchState(matchId);
+      startAsFollower();
+    } else {
+      alert('その部屋番号は見つかりませんでした。番号を確認してもう一度お試しください。');
+      show('nameScreen');
+    }
+  }
+
   function pollInvite(){
     clearInterval(inviteTimer);
     inviteTimer = setInterval(async ()=>{
@@ -631,6 +690,7 @@
         startAsAuthority();
         return;
       }
+      if (currentRoomCode) return; // 部屋番号モードは相手の到着(招待)を待つだけ
       // 自分の待機情報が相手の書き込みと衝突して上書きされていないか確認。
       // 上書きされていて、今ロビーに誰か別の人が待っている場合は、こちらから捕まえに行く
       const lobby = await sget('sumo:lobby');
@@ -647,6 +707,17 @@
       }
     }, 1000);
   }
+
+  document.getElementById('createRoomBtn').addEventListener('click', ()=>{
+    const v = nameInput.value.trim();
+    myName = v || ('力士' + Math.floor(Math.random()*900+100));
+    createRoom();
+  });
+  document.getElementById('joinRoomBtn').addEventListener('click', ()=>{
+    const v = nameInput.value.trim();
+    myName = v || ('力士' + Math.floor(Math.random()*900+100));
+    joinRoom();
+  });
 
   let cpuDifficulty = 'normal';
   const CPU_PARAMS = {
@@ -717,9 +788,17 @@
   document.getElementById('cancelSearchBtn').addEventListener('click', async ()=>{
     cancelled = true;
     clearInterval(inviteTimer);
-    const lobby = await sget('sumo:lobby');
-    if (lobby && lobby.id === myId){
-      await sset('sumo:lobby', {id:null, name:null, ts:0});
+    if (currentRoomCode){
+      const room = await sget('sumo:room:' + currentRoomCode);
+      if (room && room.id === myId){
+        await sset('sumo:room:' + currentRoomCode, {id:null, name:null, ts:0});
+      }
+      currentRoomCode = null;
+    } else {
+      const lobby = await sget('sumo:lobby');
+      if (lobby && lobby.id === myId){
+        await sset('sumo:lobby', {id:null, name:null, ts:0});
+      }
     }
     show('nameScreen');
   });
